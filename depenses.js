@@ -79,7 +79,7 @@ async function handlePhoto(ctx, sessions) {
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY manquante dans les variables Railway");
     const client = new Anthropic({ apiKey });
     const result = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-5',
       max_tokens: 300,
       messages: [{
         role: 'user',
