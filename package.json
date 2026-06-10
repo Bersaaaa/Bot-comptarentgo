@@ -1,0 +1,22 @@
+{
+  "name": "sbr-auto-bot",
+  "version": "1.0.0",
+  "description": "Bot Telegram SBR AUTO / RENTGO — Recettes & Dépenses",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.0",
+    "dotenv": "^16.0.0",
+    "node-cron": "^3.0.0",
+    "telegraf": "^4.16.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
