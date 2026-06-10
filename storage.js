@@ -1,36 +1,21 @@
-/**
- * storage.js — Le chat Telegram EST la base de données.
- *
- * Principe :
- *  - Un message épinglé par type de fichier (recettes / dépenses) par mois
- *  - Pour lire : on télécharge le fichier épinglé et on parse le CSV
- *  - Pour écrire : on ajoute la ligne, on renvoie le CSV, on épingle le nouveau message
- *
- * Le bot doit être ADMIN du groupe/channel avec droits :
- *   - Envoyer des fichiers
- *   - Épingler des messages
- */
-
 const { generateCSV, parseCSV, csvFilename, currentMonth } = require('./utils');
 
-// Cache en mémoire pour éviter de re-télécharger à chaque commande
 const cache = {};
 
 // ── Télécharge et parse le CSV épinglé ────────────────────────
 async function readCSV(telegram, chatId, prefix) {
   const { month, year } = currentMonth();
   const key = `${prefix}_${month}_${year}`;
-
   if (cache[key]) return cache[key];
 
   try {
-    const chat = await telegram.getChat(chatId);
-    if (!chat.pinned_message) return [];
-
-    // Cherche le bon fichier parmi les messages épinglés récents
     const filename = csvFilename(prefix, month, year);
-    const msg = await findPinnedCSV(telegram, chatId, filename);
-    if (!msg || !msg.document) return [];
+    // Cherche dans les messages récents du chat
+    const msg = await findCSVMessage(telegram, chatId, filename);
+    if (!msg || !msg.document) {
+      cache[key] = [];
+      return [];
+    }
 
     const fileLink = await telegram.getFileLink(msg.document.file_id);
     const res = await fetch(fileLink.href);
@@ -44,35 +29,39 @@ async function readCSV(telegram, chatId, prefix) {
   }
 }
 
-// ── Cherche un message épinglé avec le bon nom de fichier ─────
-async function findPinnedCSV(telegram, chatId, filename) {
+// ── Cherche le CSV dans les messages récents ──────────────────
+async function findCSVMessage(telegram, chatId, filename) {
   try {
-    // Telegram ne permet de récupérer qu'un seul message épinglé via getChat
-    // On utilise donc un canal dédié et on stocke les file_id dans le cache
+    // D'abord essayer le message épinglé
     const chat = await telegram.getChat(chatId);
-    const pinned = chat.pinned_message;
-    if (pinned && pinned.document && pinned.document.file_name === filename) {
-      return pinned;
+    if (chat.pinned_message?.document?.file_name === filename) {
+      return chat.pinned_message;
     }
+
+    // Sinon chercher dans l'historique récent via getUpdates workaround
+    // On stocke le file_id du dernier CSV envoyé en cache
+    const cacheKey = `file_id_${filename}`;
+    if (cache[cacheKey]) {
+      return { document: { file_id: cache[cacheKey] } };
+    }
+
     return null;
-  } catch {
+  } catch (e) {
+    console.error('findCSVMessage error:', e.message);
     return null;
   }
 }
 
-// ── Écrit (ou met à jour) le CSV épinglé ──────────────────────
+// ── Écrit le CSV et épingle ────────────────────────────────────
 async function writeCSV(telegram, chatId, prefix, headers, rows) {
   const { month, year } = currentMonth();
   const key = `${prefix}_${month}_${year}`;
-
-  // Met à jour le cache
   cache[key] = rows;
 
   const csv = generateCSV(headers, rows);
   const filename = csvFilename(prefix, month, year);
   const buf = Buffer.from(csv, 'utf8');
 
-  // Envoie le nouveau fichier
   const sent = await telegram.sendDocument(chatId, {
     source: buf,
     filename,
@@ -81,17 +70,18 @@ async function writeCSV(telegram, chatId, prefix, headers, rows) {
     parse_mode: 'Markdown',
   });
 
-  // Épingle le nouveau message (remplace l'ancien)
+  // Mémoriser le file_id pour lecture future
+  cache[`file_id_${filename}`] = sent.document.file_id;
+
   try {
     await telegram.pinChatMessage(chatId, sent.message_id, { disable_notification: true });
   } catch (e) {
-    console.error('Pin error (vérifie que le bot est admin):', e.message);
+    console.error('Pin error:', e.message);
   }
 
   return sent;
 }
 
-// ── Invalide le cache (forcer relecture) ──────────────────────
 function invalidateCache(prefix) {
   const { month, year } = currentMonth();
   delete cache[`${prefix}_${month}_${year}`];
