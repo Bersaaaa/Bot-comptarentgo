@@ -88,14 +88,14 @@ bot.on('text', async (ctx) => {
 
   if (session.type === 'recette') {
     const done = await handleNouvelleStep(ctx, session);
-    if (done) {
+    if (done === true) {
       delete sessions[key];
     }
     saveSessionsToDisk();
 
   } else if (session.type === 'depense') {
     const done = await handleDepenseStep(ctx, session);
-    if (done) {
+    if (done === true) {
       delete sessions[key];
     }
     saveSessionsToDisk();
