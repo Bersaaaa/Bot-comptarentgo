@@ -69,23 +69,24 @@ async function handleDepenseStep(ctx, session) {
 async function handlePhoto(ctx, sessions) {
   await ctx.reply('🔍 Analyse de la facture en cours...');
   try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('ANTHROPIC_API_KEY manquante dans les variables Railway');
+
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const fileLink = await ctx.telegram.getFileLink(photo.file_id);
     const res = await fetch(fileLink.href);
     const buf = await res.arrayBuffer();
     const base64 = Buffer.from(buf).toString('base64');
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY manquante dans les variables Railway");
     const client = new Anthropic({ apiKey });
     const result = await client.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 300,
+      model: 'claude-haiku-4-5',
+      max_tokens: 500,
       messages: [{
         role: 'user',
         content: [
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
-          { type: 'text', text: 'Extrait de cette facture : date (JJ/MM/AAAA), fournisseur/émetteur, montant total TTC en euros. Réponds UNIQUEMENT en JSON sans markdown : {"date":"JJ/MM/AAAA","fournisseur":"...","montant":0.00}. Si valeur introuvable, mets null.' },
+          { type: 'text', text: 'Extrait de cette facture : date (JJ/MM/AAAA), fournisseur/émetteur, montant total TTC en euros, description précise du produit ou service acheté, et catégorie parmi ces valeurs exactes : carburant, réparation, assurance, autre. Réponds UNIQUEMENT en JSON sans markdown : {"date":"JJ/MM/AAAA","fournisseur":"...","montant":0.00,"description":"produit ou service acheté","categorie":"carburant"}. Si une valeur est introuvable, mets null.' },
         ],
       }],
     });
@@ -93,14 +94,17 @@ async function handlePhoto(ctx, sessions) {
     const raw = result.content.map(b => b.text || '').join('');
     const ex = JSON.parse(raw.replace(/```json|```/g, '').trim());
 
+    const categoriesValides = ['carburant', 'réparation', 'assurance', 'autre'];
+    const categorieDetectee = categoriesValides.includes(ex.categorie) ? ex.categorie : 'autre';
+
     sessions[ctx.from.id] = {
       type: 'photo_confirm',
       data: {
         date: ex.date || '??/??/????',
         fournisseur: ex.fournisseur || 'Inconnu',
-        categorie: 'autre',
+        categorie: categorieDetectee,
         montant: ex.montant || 0,
-        description: 'Photo facture',
+        description: ex.description || 'Photo facture',
       },
     };
 
@@ -108,7 +112,9 @@ async function handlePhoto(ctx, sessions) {
       `📄 *Informations extraites :*\n\n` +
       `📅 Date : ${ex.date || 'Non trouvée'}\n` +
       `🏪 Fournisseur : ${ex.fournisseur || 'Non trouvé'}\n` +
-      `💶 Montant : ${ex.montant ?? 'Non trouvé'} €\n\n` +
+      `💶 Montant : ${ex.montant ?? 'Non trouvé'} €\n` +
+      `📝 Description : ${ex.description || 'Non trouvée'}\n` +
+      `📂 Catégorie : ${categorieDetectee}\n\n` +
       `✅ *Confirmer l'enregistrement ?* (oui/non)`,
       { parse_mode: 'Markdown' }
     );
@@ -149,7 +155,9 @@ async function handleListeDepenses(ctx) {
   let msg = `💸 *Dépenses — ${monthLabel(month, year)}*\n\n`;
   liste.forEach((r, i) => {
     msg += `${i+1}. *${r['Fournisseur']}* (${r['Catégorie']})\n`;
-    msg += `   📅 ${r['Date']} — 💶 ${r['Montant']} €\n\n`;
+    msg += `   📅 ${r['Date']} — 💶 ${r['Montant']} €\n`;
+    if (r['Description']) msg += `   📝 ${r['Description']}\n`;
+    msg += '\n';
   });
   msg += `💰 *Total : ${total.toFixed(2)} €*`;
   ctx.reply(msg, { parse_mode: 'Markdown' });
