@@ -2,7 +2,6 @@ require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 const fs = require('fs');
-const path = require('path');
 
 const { handleNouvelleStep, handleListeRecettes, handleBilanRecettes, handleExportRecettes } = require('./recettes');
 const { handleDepenseStep, handlePhoto, confirmPhoto, handleListeDepenses } = require('./depenses');
@@ -12,67 +11,39 @@ const { currentMonth, monthLabel } = require('./utils');
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const CHAT_ID = process.env.CHAT_ID;
 
-// ── SESSIONS PERSISTANTES (fichier JSON) ──────────────────────
+// ── SESSIONS EN MÉMOIRE (avec sauvegarde fichier) ─────────────
 const SESSION_FILE = '/tmp/sessions.json';
+let sessions = {};
 
-function loadSessions() {
-  try {
-    if (fs.existsSync(SESSION_FILE)) {
-      return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
-    }
-  } catch (e) {}
-  return {};
+try {
+  if (fs.existsSync(SESSION_FILE)) {
+    sessions = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+    console.log('Sessions rechargées:', Object.keys(sessions).length);
+  }
+} catch (e) { sessions = {}; }
+
+function saveSessionsToDisk() {
+  try { fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions), 'utf8'); } catch (e) {}
 }
 
-function saveSessions(sessions) {
-  try {
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions), 'utf8');
-  } catch (e) {}
-}
-
-const sessions = loadSessions();
-
-function getSessionKey(ctx) {
-  // Clé unique : chatId_userId pour éviter les conflits en groupe
-  const chatId = ctx.chat?.id || ctx.from.id;
-  const userId = ctx.from.id;
-  return `${chatId}_${userId}`;
-}
-
-function setSession(ctx, data) {
-  const key = getSessionKey(ctx);
-  sessions[key] = data;
-  saveSessions(sessions);
-}
-
-function getSession(ctx) {
-  return sessions[getSessionKey(ctx)];
-}
-
-function deleteSession(ctx) {
-  const key = getSessionKey(ctx);
-  delete sessions[key];
-  saveSessions(sessions);
+function sessionKey(ctx) {
+  return `${ctx.chat?.id || ctx.from.id}_${ctx.from.id}`;
 }
 
 // ── /start ────────────────────────────────────────────────────
 bot.command('start', (ctx) => ctx.reply(
   `🚗 *SBR AUTO / RENTGO*\n\n` +
-  `*Recettes :*\n` +
-  `/nouvelle — Saisir une location\n` +
-  `/liste — Locations du mois\n` +
-  `/bilan — Résumé du mois\n\n` +
-  `*Dépenses :*\n` +
-  `/depense — Saisir une dépense\n` +
-  `/photo — Scanner une facture\n` +
-  `/liste\_depenses — Dépenses du mois\n\n` +
-  `📎 Les CSV sont épinglés dans ce chat et mis à jour automatiquement.`,
+  `*Recettes :*\n/nouvelle — Saisir une location\n/liste — Locations du mois\n/bilan — Résumé du mois\n\n` +
+  `*Dépenses :*\n/depense — Saisir une dépense\n/photo — Scanner une facture\n/liste\_depenses — Dépenses du mois\n\n` +
+  `📎 Les CSV sont épinglés dans ce chat.`,
   { parse_mode: 'Markdown' }
 ));
 
 // ── Recettes ──────────────────────────────────────────────────
 bot.command('nouvelle', (ctx) => {
-  setSession(ctx, { type: 'recette', step: 0, data: {} });
+  const key = sessionKey(ctx);
+  sessions[key] = { type: 'recette', step: 0, data: {} };
+  saveSessionsToDisk();
   ctx.reply('📅 *Date de début* (JJ/MM/AAAA) :', { parse_mode: 'Markdown' });
 });
 
@@ -82,49 +53,52 @@ bot.command('export', (ctx) => handleExportRecettes(ctx));
 
 // ── Dépenses ──────────────────────────────────────────────────
 bot.command('depense', (ctx) => {
-  setSession(ctx, { type: 'depense', step: 0, data: {} });
+  const key = sessionKey(ctx);
+  sessions[key] = { type: 'depense', step: 0, data: {} };
+  saveSessionsToDisk();
   ctx.reply('📅 *Date de la dépense* (JJ/MM/AAAA) :', { parse_mode: 'Markdown' });
 });
 
 bot.command('liste_depenses', (ctx) => handleListeDepenses(ctx));
 
-// ── Annuler ───────────────────────────────────────────────────
 bot.command('annuler', (ctx) => {
-  deleteSession(ctx);
+  delete sessions[sessionKey(ctx)];
+  saveSessionsToDisk();
   ctx.reply('❌ Saisie annulée.');
 });
 
 // ── Photo facture ─────────────────────────────────────────────
 bot.on('photo', async (ctx) => {
-  setSession(ctx, { type: 'photo_confirm' });
-  await handlePhoto(ctx, sessions, getSessionKey(ctx));
+  const key = sessionKey(ctx);
+  sessions[key] = { type: 'photo_confirm' };
+  saveSessionsToDisk();
+  await handlePhoto(ctx, sessions, key);
 });
 
-// ── Texte libre (saisies guidées + confirmations) ─────────────
+// ── Texte libre ───────────────────────────────────────────────
 bot.on('text', async (ctx) => {
-  // Ignorer les commandes
   if (ctx.message.text.startsWith('/')) return;
 
-  const session = getSession(ctx);
+  const key = sessionKey(ctx);
+  const session = sessions[key];
+
   if (!session) return;
 
-  console.log(`[TEXT] user=${ctx.from.id} chat=${ctx.chat?.id} type=${session.type} step=${session.step}`);
+  console.log(`[TEXT] key=${key} type=${session.type} step=${session.step} text="${ctx.message.text}"`);
 
   if (session.type === 'recette') {
     const done = await handleNouvelleStep(ctx, session);
     if (done) {
-      deleteSession(ctx);
-    } else {
-      setSession(ctx, session); // sauvegarder la progression
+      delete sessions[key];
     }
+    saveSessionsToDisk();
 
   } else if (session.type === 'depense') {
     const done = await handleDepenseStep(ctx, session);
     if (done) {
-      deleteSession(ctx);
-    } else {
-      setSession(ctx, session);
+      delete sessions[key];
     }
+    saveSessionsToDisk();
 
   } else if (session.type === 'photo_confirm') {
     const text = ctx.message.text.toLowerCase();
@@ -133,14 +107,14 @@ bot.on('text', async (ctx) => {
     } else {
       ctx.reply('❌ Annulé.');
     }
-    deleteSession(ctx);
+    delete sessions[key];
+    saveSessionsToDisk();
   }
 });
 
-// ── Export automatique le 1er du mois à 8h ───────────────────
+// ── Cron mensuel ──────────────────────────────────────────────
 cron.schedule('0 8 1 * *', async () => {
   if (!CHAT_ID) return;
-
   const now = new Date();
   const month = now.getMonth() === 0 ? 12 : now.getMonth();
   const year  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
@@ -157,8 +131,7 @@ cron.schedule('0 8 1 * *', async () => {
     `📊 *Clôture — ${monthLabel(month, year)}*\n\n` +
     `🟢 Recettes : *${recettes.length} locations* — ${totalR.toFixed(2)} €\n` +
     `🔴 Dépenses : *${depenses.length} entrées* — ${totalD.toFixed(2)} €\n` +
-    `💰 Solde net : *${(totalR - totalD).toFixed(2)} €*\n\n` +
-    `📎 Les CSV du mois sont épinglés ci-dessus.`,
+    `💰 Solde net : *${(totalR - totalD).toFixed(2)} €*`,
     { parse_mode: 'Markdown' }
   );
 }, { timezone: 'Europe/Paris' });
