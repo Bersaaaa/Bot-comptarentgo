@@ -1,8 +1,23 @@
 const { generateCSV, parseCSV, csvFilename, currentMonth } = require('./utils');
+const fs = require('fs');
 
+const FILEID_STORE = '/tmp/fileids.json';
 const cache = {};
 
-// ── Télécharge et parse le CSV épinglé ────────────────────────
+// Charge les file_ids sauvegardés
+let fileIds = {};
+try {
+  if (fs.existsSync(FILEID_STORE)) {
+    fileIds = JSON.parse(fs.readFileSync(FILEID_STORE, 'utf8'));
+    console.log('FileIds rechargés:', Object.keys(fileIds));
+  }
+} catch (e) { fileIds = {}; }
+
+function saveFileIds() {
+  try { fs.writeFileSync(FILEID_STORE, JSON.stringify(fileIds), 'utf8'); } catch (e) {}
+}
+
+// ── Lire le CSV ───────────────────────────────────────────────
 async function readCSV(telegram, chatId, prefix) {
   const { month, year } = currentMonth();
   const key = `${prefix}_${month}_${year}`;
@@ -10,18 +25,34 @@ async function readCSV(telegram, chatId, prefix) {
 
   try {
     const filename = csvFilename(prefix, month, year);
-    // Cherche dans les messages récents du chat
-    const msg = await findCSVMessage(telegram, chatId, filename);
-    if (!msg || !msg.document) {
-      cache[key] = [];
+    let fileId = null;
+
+    // 1. Chercher dans le message épinglé
+    try {
+      const chat = await telegram.getChat(chatId);
+      if (chat.pinned_message?.document?.file_name === filename) {
+        fileId = chat.pinned_message.document.file_id;
+        console.log(`readCSV: trouvé dans message épinglé`);
+      }
+    } catch (e) {}
+
+    // 2. Sinon utiliser le file_id sauvegardé sur disque
+    if (!fileId && fileIds[filename]) {
+      fileId = fileIds[filename];
+      console.log(`readCSV: trouvé dans fileIds persistants`);
+    }
+
+    if (!fileId) {
+      console.log(`readCSV: ${filename} introuvable nulle part`);
       return [];
     }
 
-    const fileLink = await telegram.getFileLink(msg.document.file_id);
+    const fileLink = await telegram.getFileLink(fileId);
     const res = await fetch(fileLink.href);
     const text = await res.text();
     const rows = parseCSV(text);
     cache[key] = rows;
+    console.log(`readCSV: ${rows.length} lignes chargées`);
     return rows;
   } catch (e) {
     console.error('readCSV error:', e.message);
@@ -29,30 +60,7 @@ async function readCSV(telegram, chatId, prefix) {
   }
 }
 
-// ── Cherche le CSV dans les messages récents ──────────────────
-async function findCSVMessage(telegram, chatId, filename) {
-  try {
-    // D'abord essayer le message épinglé
-    const chat = await telegram.getChat(chatId);
-    if (chat.pinned_message?.document?.file_name === filename) {
-      return chat.pinned_message;
-    }
-
-    // Sinon chercher dans l'historique récent via getUpdates workaround
-    // On stocke le file_id du dernier CSV envoyé en cache
-    const cacheKey = `file_id_${filename}`;
-    if (cache[cacheKey]) {
-      return { document: { file_id: cache[cacheKey] } };
-    }
-
-    return null;
-  } catch (e) {
-    console.error('findCSVMessage error:', e.message);
-    return null;
-  }
-}
-
-// ── Écrit le CSV et épingle ────────────────────────────────────
+// ── Écrire le CSV ─────────────────────────────────────────────
 async function writeCSV(telegram, chatId, prefix, headers, rows) {
   const { month, year } = currentMonth();
   const key = `${prefix}_${month}_${year}`;
@@ -70,8 +78,10 @@ async function writeCSV(telegram, chatId, prefix, headers, rows) {
     parse_mode: 'Markdown',
   });
 
-  // Mémoriser le file_id pour lecture future
-  cache[`file_id_${filename}`] = sent.document.file_id;
+  // Sauvegarder le file_id sur disque
+  fileIds[filename] = sent.document.file_id;
+  saveFileIds();
+  console.log(`writeCSV: ${filename} sauvegardé`);
 
   try {
     await telegram.pinChatMessage(chatId, sent.message_id, { disable_notification: true });
