@@ -1,6 +1,8 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
+const fs = require('fs');
+const path = require('path');
 
 const { handleNouvelleStep, handleListeRecettes, handleBilanRecettes, handleExportRecettes } = require('./recettes');
 const { handleDepenseStep, handlePhoto, confirmPhoto, handleListeDepenses } = require('./depenses');
@@ -10,8 +12,48 @@ const { currentMonth, monthLabel } = require('./utils');
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 const CHAT_ID = process.env.CHAT_ID;
 
-// Sessions en mémoire pour les saisies guidées
-const sessions = {};
+// ── SESSIONS PERSISTANTES (fichier JSON) ──────────────────────
+const SESSION_FILE = '/tmp/sessions.json';
+
+function loadSessions() {
+  try {
+    if (fs.existsSync(SESSION_FILE)) {
+      return JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+    }
+  } catch (e) {}
+  return {};
+}
+
+function saveSessions(sessions) {
+  try {
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(sessions), 'utf8');
+  } catch (e) {}
+}
+
+const sessions = loadSessions();
+
+function getSessionKey(ctx) {
+  // Clé unique : chatId_userId pour éviter les conflits en groupe
+  const chatId = ctx.chat?.id || ctx.from.id;
+  const userId = ctx.from.id;
+  return `${chatId}_${userId}`;
+}
+
+function setSession(ctx, data) {
+  const key = getSessionKey(ctx);
+  sessions[key] = data;
+  saveSessions(sessions);
+}
+
+function getSession(ctx) {
+  return sessions[getSessionKey(ctx)];
+}
+
+function deleteSession(ctx) {
+  const key = getSessionKey(ctx);
+  delete sessions[key];
+  saveSessions(sessions);
+}
 
 // ── /start ────────────────────────────────────────────────────
 bot.command('start', (ctx) => ctx.reply(
@@ -23,14 +65,14 @@ bot.command('start', (ctx) => ctx.reply(
   `*Dépenses :*\n` +
   `/depense — Saisir une dépense\n` +
   `/photo — Scanner une facture\n` +
-  `/liste\\_depenses — Dépenses du mois\n\n` +
+  `/liste\_depenses — Dépenses du mois\n\n` +
   `📎 Les CSV sont épinglés dans ce chat et mis à jour automatiquement.`,
   { parse_mode: 'Markdown' }
 ));
 
 // ── Recettes ──────────────────────────────────────────────────
 bot.command('nouvelle', (ctx) => {
-  sessions[ctx.from.id] = { type: 'recette', step: 0, data: {} };
+  setSession(ctx, { type: 'recette', step: 0, data: {} });
   ctx.reply('📅 *Date de début* (JJ/MM/AAAA) :', { parse_mode: 'Markdown' });
 });
 
@@ -40,30 +82,49 @@ bot.command('export', (ctx) => handleExportRecettes(ctx));
 
 // ── Dépenses ──────────────────────────────────────────────────
 bot.command('depense', (ctx) => {
-  sessions[ctx.from.id] = { type: 'depense', step: 0, data: {} };
+  setSession(ctx, { type: 'depense', step: 0, data: {} });
   ctx.reply('📅 *Date de la dépense* (JJ/MM/AAAA) :', { parse_mode: 'Markdown' });
 });
 
 bot.command('liste_depenses', (ctx) => handleListeDepenses(ctx));
 
+// ── Annuler ───────────────────────────────────────────────────
+bot.command('annuler', (ctx) => {
+  deleteSession(ctx);
+  ctx.reply('❌ Saisie annulée.');
+});
+
 // ── Photo facture ─────────────────────────────────────────────
 bot.on('photo', async (ctx) => {
-  sessions[ctx.from.id] = { type: 'photo_confirm' };
-  await handlePhoto(ctx, sessions);
+  setSession(ctx, { type: 'photo_confirm' });
+  await handlePhoto(ctx, sessions, getSessionKey(ctx));
 });
 
 // ── Texte libre (saisies guidées + confirmations) ─────────────
 bot.on('text', async (ctx) => {
-  const session = sessions[ctx.from.id];
+  // Ignorer les commandes
+  if (ctx.message.text.startsWith('/')) return;
+
+  const session = getSession(ctx);
   if (!session) return;
+
+  console.log(`[TEXT] user=${ctx.from.id} chat=${ctx.chat?.id} type=${session.type} step=${session.step}`);
 
   if (session.type === 'recette') {
     const done = await handleNouvelleStep(ctx, session);
-    if (done) delete sessions[ctx.from.id];
+    if (done) {
+      deleteSession(ctx);
+    } else {
+      setSession(ctx, session); // sauvegarder la progression
+    }
 
   } else if (session.type === 'depense') {
     const done = await handleDepenseStep(ctx, session);
-    if (done) delete sessions[ctx.from.id];
+    if (done) {
+      deleteSession(ctx);
+    } else {
+      setSession(ctx, session);
+    }
 
   } else if (session.type === 'photo_confirm') {
     const text = ctx.message.text.toLowerCase();
@@ -72,7 +133,7 @@ bot.on('text', async (ctx) => {
     } else {
       ctx.reply('❌ Annulé.');
     }
-    delete sessions[ctx.from.id];
+    deleteSession(ctx);
   }
 });
 
@@ -80,7 +141,6 @@ bot.on('text', async (ctx) => {
 cron.schedule('0 8 1 * *', async () => {
   if (!CHAT_ID) return;
 
-  // Le CSV est déjà épinglé — on envoie juste le résumé
   const now = new Date();
   const month = now.getMonth() === 0 ? 12 : now.getMonth();
   const year  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
@@ -103,7 +163,7 @@ cron.schedule('0 8 1 * *', async () => {
   );
 }, { timezone: 'Europe/Paris' });
 
-bot.launch();
+bot.launch({ dropPendingUpdates: true });
 console.log('🤖 Bot SBR AUTO démarré');
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
