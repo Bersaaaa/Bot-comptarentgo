@@ -1,4 +1,4 @@
-const Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
+const { default: Anthropic } = require('@anthropic-ai/sdk');
 const { readCSV, writeCSV, invalidateCache } = require('./storage');
 const { currentMonth, monthLabel } = require('./utils');
 
@@ -75,7 +75,9 @@ async function handlePhoto(ctx, sessions) {
     const buf = await res.arrayBuffer();
     const base64 = Buffer.from(buf).toString('base64');
 
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("ANTHROPIC_API_KEY manquante dans les variables Railway");
+    const client = new Anthropic({ apiKey });
     const result = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 300,
