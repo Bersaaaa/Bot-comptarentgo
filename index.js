@@ -2,8 +2,8 @@ require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const cron = require('node-cron');
 
-const { handleNouvelleStep, handleListeRecettes, handleBilanRecettes, handleExportRecettes } = require('./handlers/recettes');
-const { handleDepenseStep, handlePhoto, confirmPhoto, handleListeDepenses } = require('./handlers/depenses');
+const { handleNouvelleStep, handleListeRecettes, handleBilanRecettes, handleExportRecettes } = require('./recettes');
+const { handleDepenseStep, handlePhoto, confirmPhoto, handleListeDepenses } = require('./depenses');
 const { readCSV, invalidateCache } = require('./storage');
 const { currentMonth, monthLabel } = require('./utils');
 

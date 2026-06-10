@@ -1,6 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk');
-const { readCSV, writeCSV, invalidateCache } = require('../storage');
-const { currentMonth, monthLabel } = require('../utils');
+const { readCSV, writeCSV, invalidateCache } = require('./storage');
+const { currentMonth, monthLabel } = require('./utils');
 
 const HEADERS = ['Date','Fournisseur','Catégorie','Montant','Description'];
 const CATEGORIES = { '1': 'carburant', '2': 'réparation', '3': 'assurance', '4': 'autre' };
