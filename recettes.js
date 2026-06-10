@@ -1,116 +1,117 @@
-const { loadData, saveData } = require('../storage');
-const { generateCSV, parseDate, diffDays, currentMonth } = require('../utils');
+const { readCSV, writeCSV, invalidateCache } = require('../storage');
+const { diffDays, currentMonth, monthLabel } = require('../utils');
 
-// ─── SAISIE GUIDÉE /nouvelle ──────────────────────────────────
-const STEPS = [
-  { key: 'date_debut',      label: '📅 *Date de fin* (JJ/MM/AAAA) :' },
-  { key: 'date_fin',        label: '👤 *Nom du client* :' },
-  { key: 'client',          label: '🚗 *Véhicule* (ex: Renault Clio) :' },
-  { key: 'vehicule',        label: '🔢 *Immatriculation* :' },
-  { key: 'immatriculation', label: '💶 *Montant total (€)* :' },
-  { key: 'montant',         label: '🔒 *Caution reçue ?* (oui/non) :' },
-  { key: 'caution',         label: null }, // dernière étape
-];
+const HEADERS = ['Date début','Date fin','Client','Véhicule','Immatriculation','Jours','Montant TTC','Caution'];
+const CHAT_ID = process.env.CHAT_ID;
 
+// ── Saisie guidée /nouvelle ───────────────────────────────────
 async function handleNouvelleStep(ctx, session) {
-  const stepIndex = session.step;
+  const step = session.step;
   const text = ctx.message.text.trim();
 
-  // Validation basique
-  if (stepIndex === 0 || stepIndex === 1) {
-    if (!text.match(/^\d{2}\/\d{2}\/\d{4}$/)) {
-      ctx.reply('⚠️ Format invalide. Utilise JJ/MM/AAAA :');
-      return false;
-    }
+  const DATE_RE = /^\d{2}\/\d{2}\/\d{4}$/;
+
+  if (step === 0) {
+    if (!DATE_RE.test(text)) return ctx.reply('⚠️ Format invalide. Ex : 01/06/2025 :');
+    session.data.date_debut = text;
+    session.step++;
+    return ctx.reply('📅 *Date de fin* (JJ/MM/AAAA) :', { parse_mode: 'Markdown' });
   }
-  if (stepIndex === 5) {
-    if (isNaN(parseFloat(text.replace(',', '.')))) {
-      ctx.reply('⚠️ Montant invalide. Entre un nombre (ex: 350 ou 350.00) :');
-      return false;
-    }
+  if (step === 1) {
+    if (!DATE_RE.test(text)) return ctx.reply('⚠️ Format invalide. Ex : 05/06/2025 :');
+    session.data.date_fin = text;
+    session.step++;
+    return ctx.reply('👤 *Nom du client* :', { parse_mode: 'Markdown' });
   }
-
-  // Stocker la réponse
-  const keys = ['date_debut', 'date_fin', 'client', 'vehicule', 'immatriculation', 'montant', 'caution'];
-  session.data[keys[stepIndex]] = text;
-  session.step++;
-
-  // Étape suivante ou fin
-  if (session.step < STEPS.length) {
-    ctx.reply(STEPS[session.step - 1].label, { parse_mode: 'Markdown' });
-    return false;
+  if (step === 2) {
+    session.data.client = text;
+    session.step++;
+    return ctx.reply('🚗 *Véhicule* (ex : Renault Clio) :', { parse_mode: 'Markdown' });
   }
+  if (step === 3) {
+    session.data.vehicule = text;
+    session.step++;
+    return ctx.reply('🔢 *Immatriculation* :', { parse_mode: 'Markdown' });
+  }
+  if (step === 4) {
+    session.data.immatriculation = text;
+    session.step++;
+    return ctx.reply('💶 *Montant total (€)* :', { parse_mode: 'Markdown' });
+  }
+  if (step === 5) {
+    const val = parseFloat(text.replace(',', '.'));
+    if (isNaN(val)) return ctx.reply('⚠️ Montant invalide. Ex : 280 ou 280.50 :');
+    session.data.montant = val;
+    session.step++;
+    return ctx.reply('🔒 *Caution reçue ?* (oui/non) :', { parse_mode: 'Markdown' });
+  }
+  if (step === 6) {
+    const caution = text.toLowerCase().startsWith('o') ? 'Oui' : 'Non';
+    const d = session.data;
+    const jours = diffDays(d.date_debut, d.date_fin);
 
-  // Enregistrement
-  const d = session.data;
-  const jours = diffDays(parseDate(d.date_debut), parseDate(d.date_fin));
-  const caution = d.caution.toLowerCase().startsWith('o') ? 'Oui' : 'Non';
+    const newRow = [d.date_debut, d.date_fin, d.client, d.vehicule, d.immatriculation, jours, d.montant, caution];
 
-  const recette = {
-    date_debut: d.date_debut,
-    date_fin: d.date_fin,
-    client: d.client,
-    vehicule: d.vehicule,
-    immatriculation: d.immatriculation,
-    jours: jours,
-    montant: parseFloat(d.montant.replace(',', '.')),
-    caution,
-    created_at: new Date().toISOString(),
-  };
+    // Lire les lignes existantes et ajouter
+    invalidateCache('recettes');
+    const existing = await readCSV(ctx.telegram, CHAT_ID, 'recettes');
+    const rows = existing.map(r => [
+      r['Date début'], r['Date fin'], r['Client'], r['Véhicule'],
+      r['Immatriculation'], r['Jours'], r['Montant TTC'], r['Caution']
+    ]);
+    rows.push(newRow);
 
-  const data = loadData();
-  data.recettes.push(recette);
-  saveData(data);
+    await writeCSV(ctx.telegram, CHAT_ID, 'recettes', HEADERS, rows);
 
-  ctx.reply(
-    `✅ *Location enregistrée !*\n\n` +
-    `👤 ${recette.client}\n` +
-    `🚗 ${recette.vehicule} (${recette.immatriculation})\n` +
-    `📅 ${recette.date_debut} → ${recette.date_fin} (${recette.jours} j)\n` +
-    `💶 ${recette.montant} € | Caution : ${recette.caution}`,
-    { parse_mode: 'Markdown' }
-  );
-  return true;
+    await ctx.reply(
+      `✅ *Location enregistrée !*\n\n` +
+      `👤 ${d.client}\n` +
+      `🚗 ${d.vehicule} — ${d.immatriculation}\n` +
+      `📅 ${d.date_debut} → ${d.date_fin} *(${jours} j)*\n` +
+      `💶 ${d.montant} € | Caution : ${caution}`,
+      { parse_mode: 'Markdown' }
+    );
+    return true; // session terminée
+  }
 }
 
-// ─── /liste ───────────────────────────────────────────────────
-function handleListeRecettes(ctx) {
-  const data = loadData();
+// ── /liste ────────────────────────────────────────────────────
+async function handleListeRecettes(ctx) {
+  invalidateCache('recettes');
+  const rows = await readCSV(ctx.telegram, CHAT_ID, 'recettes');
   const { month, year } = currentMonth();
-  const liste = data.recettes.filter(r => {
-    const [j, m, a] = r.date_debut.split('/');
-    return parseInt(m) === month && parseInt(a) === year;
+
+  const liste = rows.filter(r => {
+    const parts = (r['Date début'] || '').split('/');
+    return parseInt(parts[1]) === month && parseInt(parts[2]) === year;
   });
 
-  if (liste.length === 0) {
-    return ctx.reply('📭 Aucune location ce mois-ci.');
-  }
+  if (!liste.length) return ctx.reply('📭 Aucune location ce mois-ci.');
 
-  const mois = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
-  let msg = `📋 *Locations — ${mois[month-1]} ${year}*\n\n`;
+  let msg = `📋 *Locations — ${monthLabel(month, year)}*\n\n`;
   liste.forEach((r, i) => {
-    msg += `${i+1}. ${r.client} — ${r.vehicule}\n`;
-    msg += `   📅 ${r.date_debut} → ${r.date_fin} (${r.jours}j) — 💶 ${r.montant} €\n\n`;
+    msg += `${i+1}. *${r['Client']}* — ${r['Véhicule']}\n`;
+    msg += `   📅 ${r['Date début']} → ${r['Date fin']} (${r['Jours']}j) — 💶 ${r['Montant TTC']} €\n\n`;
   });
-
   ctx.reply(msg, { parse_mode: 'Markdown' });
 }
 
-// ─── /bilan ───────────────────────────────────────────────────
-function handleBilanRecettes(ctx) {
-  const data = loadData();
+// ── /bilan ────────────────────────────────────────────────────
+async function handleBilanRecettes(ctx) {
+  invalidateCache('recettes');
+  const rows = await readCSV(ctx.telegram, CHAT_ID, 'recettes');
   const { month, year } = currentMonth();
-  const liste = data.recettes.filter(r => {
-    const [j, m, a] = r.date_debut.split('/');
-    return parseInt(m) === month && parseInt(a) === year;
+
+  const liste = rows.filter(r => {
+    const parts = (r['Date début'] || '').split('/');
+    return parseInt(parts[1]) === month && parseInt(parts[2]) === year;
   });
 
-  const total = liste.reduce((s, r) => s + r.montant, 0);
-  const jours = liste.reduce((s, r) => s + r.jours, 0);
-  const mois = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+  const total = liste.reduce((s, r) => s + parseFloat(r['Montant TTC'] || 0), 0);
+  const jours = liste.reduce((s, r) => s + parseInt(r['Jours'] || 0), 0);
 
   ctx.reply(
-    `📊 *Bilan — ${mois[month-1]} ${year}*\n\n` +
+    `📊 *Bilan — ${monthLabel(month, year)}*\n\n` +
     `🔢 Nb locations : *${liste.length}*\n` +
     `💶 Total encaissé : *${total.toFixed(2)} €*\n` +
     `📅 Nb jours loués : *${jours}*`,
@@ -118,31 +119,15 @@ function handleBilanRecettes(ctx) {
   );
 }
 
-// ─── /export ──────────────────────────────────────────────────
+// ── /export ───────────────────────────────────────────────────
 async function handleExportRecettes(ctx) {
-  const data = loadData();
-  const { month, year } = currentMonth();
-  const liste = data.recettes.filter(r => {
-    const [j, m, a] = r.date_debut.split('/');
-    return parseInt(m) === month && parseInt(a) === year;
-  });
+  invalidateCache('recettes');
+  const rows = await readCSV(ctx.telegram, CHAT_ID, 'recettes');
 
-  const headers = ['Date début','Date fin','Client','Véhicule','Immatriculation','Jours','Montant TTC','Caution'];
-  const rows = liste.map(r => [
-    r.date_debut, r.date_fin, r.client, r.vehicule,
-    r.immatriculation, r.jours, r.montant, r.caution
-  ]);
+  if (!rows.length) return ctx.reply('📭 Aucune donnée à exporter ce mois-ci.');
 
-  const csv = generateCSV(headers, rows);
-  const mois = String(month).padStart(2, '0');
-  const filename = `recettes_${year}_${mois}.csv`;
-
-  await ctx.replyWithDocument({ source: Buffer.from(csv, 'utf8'), filename });
+  // Renvoie simplement le CSV depuis le chat (déjà épinglé)
+  ctx.reply('📎 Le CSV est déjà épinglé dans ce chat. Utilise /nouvelle pour ajouter une location.');
 }
 
-module.exports = {
-  handleNouvelleStep,
-  handleListeRecettes,
-  handleBilanRecettes,
-  handleExportRecettes,
-};
+module.exports = { handleNouvelleStep, handleListeRecettes, handleBilanRecettes, handleExportRecettes };

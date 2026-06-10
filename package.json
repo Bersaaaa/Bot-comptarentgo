@@ -1,7 +1,7 @@
 {
   "name": "sbr-auto-bot",
-  "version": "1.0.0",
-  "description": "Bot Telegram SBR AUTO / RENTGO — Recettes & Dépenses",
+  "version": "2.0.0",
+  "description": "Bot Telegram SBR AUTO / RENTGO — stockage CSV Telegram",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

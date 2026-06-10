@@ -1,146 +1,87 @@
 # 🚗 Bot Telegram — SBR AUTO / RENTGO
 
-Bot de gestion des recettes et dépenses pour une activité de location de véhicules.
+Gestion des recettes et dépenses de location de véhicules.  
+**Zéro base de données** — les CSV épinglés dans Telegram sont la source de vérité.
 
 ---
 
-## 📋 Fonctionnalités
+## 🔄 Fonctionnement
 
-### Bot Recettes
-| Commande | Action |
+```
+/nouvelle  →  saisie guidée  →  CSV mis à jour  →  épinglé dans le chat
+/depense   →  saisie guidée  →  CSV mis à jour  →  épinglé dans le chat
+/photo     →  photo facture  →  Claude extrait  →  confirmation  →  CSV mis à jour
+```
+
+Les commandes `/liste` et `/bilan` téléchargent le CSV épinglé et le parsent en direct.
+
+---
+
+## 📋 Commandes
+
+| Commande | Description |
 |---|---|
-| `/nouvelle` | Saisie guidée d'une location |
+| `/nouvelle` | Saisir une location (date, client, véhicule, montant…) |
 | `/liste` | Locations du mois en cours |
 | `/bilan` | Résumé : nb locations, total encaissé, jours loués |
-| `/export` | Export CSV du mois |
+| `/depense` | Saisir une dépense |
+| `/photo` | Scanner une facture → extraction automatique |
+| `/liste_depenses` | Dépenses du mois |
 
-### Bot Dépenses
-| Commande | Action |
-|---|---|
-| `/depense` | Saisie guidée d'une dépense |
-| `/photo` | Scanner une facture photo → extraction via Claude AI |
-| `/liste_depenses` | Dépenses du mois en cours |
-| `/export_depenses` | Export CSV du mois |
-
-### Export automatique
-Le **1er de chaque mois à 8h** (heure de Paris), le bot envoie automatiquement :
-- Un résumé du mois écoulé (recettes, dépenses, solde)
-- Le CSV des recettes
-- Le CSV des dépenses
+Le **1er de chaque mois à 8h**, le bot envoie un résumé de clôture.
 
 ---
 
-## 🚀 Déploiement sur Railway
+## 🚀 Déploiement Railway
 
-### 1. Créer le projet Railway
+### 1. Prépare le bot Telegram
 
-1. Va sur [railway.app](https://railway.app) → New Project → Deploy from GitHub
-2. Connecte ton repo GitHub
+1. Parle à [@BotFather](https://t.me/BotFather) → `/newbot` → récupère le **token**
+2. Crée un **groupe privé** dédié (ex: "SBR AUTO — Gestion")
+3. Ajoute le bot dans le groupe
+4. Donne-lui les droits **admin** avec :
+   - ✅ Envoyer des messages
+   - ✅ Envoyer des fichiers
+   - ✅ Épingler des messages
+5. Obtiens ton **CHAT_ID** du groupe : envoie un message dans le groupe, puis va sur `https://api.telegram.org/bot<TOKEN>/getUpdates` et récupère le `chat.id` (commence par `-`)
 
-### 2. Ajouter un Volume (persistance des données)
+### 2. Déploie sur Railway
 
-1. Dans ton projet Railway → **New** → **Volume**
-2. Monte-le sur `/data`
-3. Ça garantit que `data.json` survive aux redémarrages
+1. Push ce dossier sur GitHub
+2. Railway → New Project → Deploy from GitHub
+3. **Pas besoin de Volume** — tout est dans Telegram ✅
 
 ### 3. Variables d'environnement
-
-Dans Railway → **Variables**, ajoute :
 
 ```
 TELEGRAM_TOKEN=     # Token de @BotFather
 ANTHROPIC_API_KEY=  # Clé API Anthropic (pour /photo)
-CHAT_ID=            # Ton ID Telegram (via @userinfobot)
-DATA_DIR=/data      # Chemin du volume Railway
-```
-
-### 4. Obtenir ton CHAT_ID
-
-1. Envoie un message à [@userinfobot](https://t.me/userinfobot) sur Telegram
-2. Il te répond avec ton ID numérique
-
-### 5. Créer le bot Telegram
-
-1. Parle à [@BotFather](https://t.me/BotFather)
-2. `/newbot` → donne un nom → récupère le token
-3. Configure les commandes avec `/setcommands` :
-
-```
-start - Aide et liste des commandes
-nouvelle - Saisir une nouvelle location
-liste - Locations du mois en cours
-bilan - Résumé du mois
-export - Export CSV recettes
-depense - Saisir une dépense
-photo - Scanner une facture
-liste_depenses - Dépenses du mois
-export_depenses - Export CSV dépenses
+CHAT_ID=            # ID du groupe Telegram (ex: -1001234567890)
 ```
 
 ---
 
-## 🗂 Structure du projet
-
-```
-bot/
-├── index.js              # Point d'entrée, routage commandes
-├── storage.js            # Lecture/écriture data.json
-├── utils.js              # CSV, dates, helpers
-├── handlers/
-│   ├── recettes.js       # /nouvelle, /liste, /bilan, /export
-│   ├── depenses.js       # /depense, /photo, /liste_depenses, /export_depenses
-│   └── export.js         # Export automatique mensuel
-├── package.json
-├── railway.toml
-└── .env.example
-```
-
-### Structure de data.json
-
-```json
-{
-  "recettes": [
-    {
-      "date_debut": "01/06/2025",
-      "date_fin": "05/06/2025",
-      "client": "Dupont Jean",
-      "vehicule": "Renault Clio",
-      "immatriculation": "AB-123-CD",
-      "jours": 4,
-      "montant": 280.00,
-      "caution": "Oui",
-      "created_at": "2025-06-01T10:00:00.000Z"
-    }
-  ],
-  "depenses": [
-    {
-      "date": "03/06/2025",
-      "fournisseur": "Total",
-      "categorie": "carburant",
-      "montant": 65.50,
-      "description": "Plein Clio",
-      "created_at": "2025-06-03T14:00:00.000Z"
-    }
-  ]
-}
-```
-
----
-
-## 💻 Développement local
+## 💻 Dev local
 
 ```bash
 npm install
 cp .env.example .env
-# Remplis .env avec tes vraies valeurs
+# Remplis .env
 npm run dev
 ```
 
 ---
 
-## 📦 Dépendances
+## 📁 Structure
 
-- **telegraf** — Framework bot Telegram
-- **@anthropic-ai/sdk** — Claude API pour l'extraction des factures
-- **node-cron** — Export automatique mensuel
-- **dotenv** — Variables d'environnement
+```
+bot/
+├── index.js              # Routage des commandes
+├── storage.js            # Lecture/écriture CSV ↔ Telegram
+├── utils.js              # CSV, dates, helpers
+├── handlers/
+│   ├── recettes.js       # /nouvelle /liste /bilan
+│   └── depenses.js       # /depense /photo /liste_depenses
+├── package.json
+└── railway.toml
+```

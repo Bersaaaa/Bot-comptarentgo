@@ -1,194 +1,156 @@
 const Anthropic = require('@anthropic-ai/sdk');
-const { loadData, saveData } = require('../storage');
-const { generateCSV, currentMonth } = require('../utils');
+const { readCSV, writeCSV, invalidateCache } = require('../storage');
+const { currentMonth, monthLabel } = require('../utils');
 
-const CATEGORIES = ['carburant', 'réparation', 'assurance', 'autre'];
+const HEADERS = ['Date','Fournisseur','Catégorie','Montant','Description'];
+const CATEGORIES = { '1': 'carburant', '2': 'réparation', '3': 'assurance', '4': 'autre' };
+const CHAT_ID = process.env.CHAT_ID;
 
-// ─── SAISIE GUIDÉE /depense ───────────────────────────────────
+// ── Saisie guidée /depense ────────────────────────────────────
 async function handleDepenseStep(ctx, session) {
   const step = session.step;
   const text = ctx.message.text.trim();
+  const DATE_RE = /^\d{2}\/\d{2}\/\d{4}$/;
 
   if (step === 0) {
-    if (!text.match(/^\d{2}\/\d{2}\/\d{4}$/)) {
-      ctx.reply('⚠️ Format invalide. Utilise JJ/MM/AAAA :');
-      return false;
-    }
+    if (!DATE_RE.test(text)) return ctx.reply('⚠️ Format invalide. Ex : 03/06/2025 :');
     session.data.date = text;
     session.step++;
-    ctx.reply('🏪 *Fournisseur* :', { parse_mode: 'Markdown' });
-    return false;
+    return ctx.reply('🏪 *Fournisseur* :', { parse_mode: 'Markdown' });
   }
-
   if (step === 1) {
     session.data.fournisseur = text;
     session.step++;
-    ctx.reply(
+    return ctx.reply(
       '📂 *Catégorie* :\n1. Carburant\n2. Réparation\n3. Assurance\n4. Autre',
       { parse_mode: 'Markdown' }
     );
-    return false;
   }
-
   if (step === 2) {
-    const map = { '1': 'carburant', '2': 'réparation', '3': 'assurance', '4': 'autre' };
-    const cat = map[text] || text.toLowerCase();
-    if (!CATEGORIES.includes(cat)) {
-      ctx.reply('⚠️ Tape 1, 2, 3 ou 4 :');
-      return false;
-    }
+    const cat = CATEGORIES[text] || text.toLowerCase();
+    if (!Object.values(CATEGORIES).includes(cat)) return ctx.reply('⚠️ Tape 1, 2, 3 ou 4 :');
     session.data.categorie = cat;
     session.step++;
-    ctx.reply('💶 *Montant (€)* :', { parse_mode: 'Markdown' });
-    return false;
+    return ctx.reply('💶 *Montant (€)* :', { parse_mode: 'Markdown' });
   }
-
   if (step === 3) {
-    if (isNaN(parseFloat(text.replace(',', '.')))) {
-      ctx.reply('⚠️ Montant invalide (ex: 45.00) :');
-      return false;
-    }
-    session.data.montant = parseFloat(text.replace(',', '.'));
+    const val = parseFloat(text.replace(',', '.'));
+    if (isNaN(val)) return ctx.reply('⚠️ Montant invalide. Ex : 65.50 :');
+    session.data.montant = val;
     session.step++;
-    ctx.reply('📝 *Description* (ou "–" pour passer) :', { parse_mode: 'Markdown' });
-    return false;
+    return ctx.reply('📝 *Description* (ou — pour passer) :', { parse_mode: 'Markdown' });
   }
-
   if (step === 4) {
-    session.data.description = text === '–' ? '' : text;
+    const d = session.data;
+    const description = text === '—' || text === '-' ? '' : text;
+    const newRow = [d.date, d.fournisseur, d.categorie, d.montant, description];
 
-    const depense = {
-      ...session.data,
-      created_at: new Date().toISOString(),
-    };
+    invalidateCache('depenses');
+    const existing = await readCSV(ctx.telegram, CHAT_ID, 'depenses');
+    const rows = existing.map(r => [r['Date'], r['Fournisseur'], r['Catégorie'], r['Montant'], r['Description']]);
+    rows.push(newRow);
 
-    const data = loadData();
-    data.depenses.push(depense);
-    saveData(data);
+    await writeCSV(ctx.telegram, CHAT_ID, 'depenses', HEADERS, rows);
 
-    ctx.reply(
+    await ctx.reply(
       `✅ *Dépense enregistrée !*\n\n` +
-      `📅 ${depense.date}\n` +
-      `🏪 ${depense.fournisseur}\n` +
-      `📂 ${depense.categorie}\n` +
-      `💶 ${depense.montant} €\n` +
-      `📝 ${depense.description || '—'}`,
+      `📅 ${d.date}\n` +
+      `🏪 ${d.fournisseur}\n` +
+      `📂 ${d.categorie}\n` +
+      `💶 ${d.montant} €\n` +
+      `📝 ${description || '—'}`,
       { parse_mode: 'Markdown' }
     );
     return true;
   }
 }
 
-// ─── /photo — Extraction via Claude API ───────────────────────
+// ── /photo — Extraction via Claude API ───────────────────────
 async function handlePhoto(ctx, sessions) {
-  ctx.reply('🔍 Analyse de la facture en cours...');
-
+  await ctx.reply('🔍 Analyse de la facture en cours...');
   try {
-    // Récupérer la photo en base64
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const fileLink = await ctx.telegram.getFileLink(photo.file_id);
-    const response = await fetch(fileLink.href);
-    const buffer = await response.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString('base64');
+    const res = await fetch(fileLink.href);
+    const buf = await res.arrayBuffer();
+    const base64 = Buffer.from(buf).toString('base64');
 
-    // Appel Claude API
     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const result = await client.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
+      max_tokens: 300,
       messages: [{
         role: 'user',
         content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
-          },
-          {
-            type: 'text',
-            text: 'Extrait de cette facture : la date (format JJ/MM/AAAA), le fournisseur/émetteur, et le montant total TTC en euros. Réponds UNIQUEMENT en JSON sans markdown, format : {"date":"JJ/MM/AAAA","fournisseur":"...","montant":0.00}. Si tu ne trouves pas une valeur, mets null.',
-          },
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
+          { type: 'text', text: 'Extrait de cette facture : date (JJ/MM/AAAA), fournisseur/émetteur, montant total TTC en euros. Réponds UNIQUEMENT en JSON sans markdown : {"date":"JJ/MM/AAAA","fournisseur":"...","montant":0.00}. Si valeur introuvable, mets null.' },
         ],
       }],
     });
 
     const raw = result.content.map(b => b.text || '').join('');
-    const extracted = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    const ex = JSON.parse(raw.replace(/```json|```/g, '').trim());
 
     sessions[ctx.from.id] = {
       type: 'photo_confirm',
       data: {
-        date: extracted.date || '??/??/????',
-        fournisseur: extracted.fournisseur || 'Inconnu',
+        date: ex.date || '??/??/????',
+        fournisseur: ex.fournisseur || 'Inconnu',
         categorie: 'autre',
-        montant: extracted.montant || 0,
-        description: 'Importé via photo',
-        created_at: new Date().toISOString(),
+        montant: ex.montant || 0,
+        description: 'Photo facture',
       },
     };
 
     ctx.reply(
       `📄 *Informations extraites :*\n\n` +
-      `📅 Date : ${extracted.date || 'Non trouvée'}\n` +
-      `🏪 Fournisseur : ${extracted.fournisseur || 'Non trouvé'}\n` +
-      `💶 Montant : ${extracted.montant || 'Non trouvé'} €\n\n` +
+      `📅 Date : ${ex.date || 'Non trouvée'}\n` +
+      `🏪 Fournisseur : ${ex.fournisseur || 'Non trouvé'}\n` +
+      `💶 Montant : ${ex.montant ?? 'Non trouvé'} €\n\n` +
       `✅ *Confirmer l'enregistrement ?* (oui/non)`,
       { parse_mode: 'Markdown' }
     );
-
   } catch (err) {
-    console.error('Photo extraction error:', err);
-    ctx.reply('❌ Impossible d\'analyser la facture. Essaie /depense pour saisir manuellement.');
+    console.error('Photo error:', err.message);
+    ctx.reply('❌ Impossible d\'analyser la photo. Utilise /depense pour saisir manuellement.');
   }
 }
 
-// ─── /liste_depenses ──────────────────────────────────────────
-function handleListeDepenses(ctx) {
-  const data = loadData();
+// ── Confirmation après /photo ─────────────────────────────────
+async function confirmPhoto(ctx, session) {
+  const d = session.data;
+  const newRow = [d.date, d.fournisseur, d.categorie, d.montant, d.description];
+
+  invalidateCache('depenses');
+  const existing = await readCSV(ctx.telegram, CHAT_ID, 'depenses');
+  const rows = existing.map(r => [r['Date'], r['Fournisseur'], r['Catégorie'], r['Montant'], r['Description']]);
+  rows.push(newRow);
+
+  await writeCSV(ctx.telegram, CHAT_ID, 'depenses', HEADERS, rows);
+  ctx.reply('✅ Dépense enregistrée !');
+}
+
+// ── /liste_depenses ───────────────────────────────────────────
+async function handleListeDepenses(ctx) {
+  invalidateCache('depenses');
+  const rows = await readCSV(ctx.telegram, CHAT_ID, 'depenses');
   const { month, year } = currentMonth();
-  const liste = data.depenses.filter(d => {
-    const [j, m, a] = d.date.split('/');
-    return parseInt(m) === month && parseInt(a) === year;
+
+  const liste = rows.filter(r => {
+    const parts = (r['Date'] || '').split('/');
+    return parseInt(parts[1]) === month && parseInt(parts[2]) === year;
   });
 
-  if (liste.length === 0) {
-    return ctx.reply('📭 Aucune dépense ce mois-ci.');
-  }
+  if (!liste.length) return ctx.reply('📭 Aucune dépense ce mois-ci.');
 
-  const mois = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
-  let msg = `💸 *Dépenses — ${mois[month-1]} ${year}*\n\n`;
-  const total = liste.reduce((s, d) => s + d.montant, 0);
-
-  liste.forEach((d, i) => {
-    msg += `${i+1}. ${d.fournisseur} (${d.categorie})\n`;
-    msg += `   📅 ${d.date} — 💶 ${d.montant} €\n\n`;
+  const total = liste.reduce((s, r) => s + parseFloat(r['Montant'] || 0), 0);
+  let msg = `💸 *Dépenses — ${monthLabel(month, year)}*\n\n`;
+  liste.forEach((r, i) => {
+    msg += `${i+1}. *${r['Fournisseur']}* (${r['Catégorie']})\n`;
+    msg += `   📅 ${r['Date']} — 💶 ${r['Montant']} €\n\n`;
   });
-
   msg += `💰 *Total : ${total.toFixed(2)} €*`;
   ctx.reply(msg, { parse_mode: 'Markdown' });
 }
 
-// ─── /export_depenses ─────────────────────────────────────────
-async function handleExportDepenses(ctx) {
-  const data = loadData();
-  const { month, year } = currentMonth();
-  const liste = data.depenses.filter(d => {
-    const [j, m, a] = d.date.split('/');
-    return parseInt(m) === month && parseInt(a) === year;
-  });
-
-  const headers = ['Date','Fournisseur','Catégorie','Montant','Description'];
-  const rows = liste.map(d => [d.date, d.fournisseur, d.categorie, d.montant, d.description]);
-
-  const csv = generateCSV(headers, rows);
-  const moisPad = String(month).padStart(2, '0');
-  const filename = `depenses_${year}_${moisPad}.csv`;
-
-  await ctx.replyWithDocument({ source: Buffer.from(csv, 'utf8'), filename });
-}
-
-module.exports = {
-  handleDepenseStep,
-  handlePhoto,
-  handleListeDepenses,
-  handleExportDepenses,
-};
+module.exports = { handleDepenseStep, handlePhoto, confirmPhoto, handleListeDepenses };
