@@ -1,4 +1,4 @@
-const Anthropic = require('@anthropic-ai/sdk');
+const Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
 const { readCSV, writeCSV, invalidateCache } = require('./storage');
 const { currentMonth, monthLabel } = require('./utils');
 
