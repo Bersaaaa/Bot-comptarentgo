@@ -86,29 +86,36 @@ bot.on('text', async (ctx) => {
 
   console.log(`[TEXT] key=${key} type=${session.type} step=${session.step} text="${ctx.message.text}"`);
 
-  if (session.type === 'recette') {
-    const done = await handleNouvelleStep(ctx, session);
-    if (done === true) {
-      delete sessions[key];
-    }
-    saveSessionsToDisk();
+  try {
+    if (session.type === 'recette') {
+      const done = await handleNouvelleStep(ctx, session);
+      if (done === true) {
+        delete sessions[key];
+      }
+      saveSessionsToDisk();
 
-  } else if (session.type === 'depense') {
-    const done = await handleDepenseStep(ctx, session);
-    if (done === true) {
-      delete sessions[key];
-    }
-    saveSessionsToDisk();
+    } else if (session.type === 'depense') {
+      const done = await handleDepenseStep(ctx, session);
+      if (done === true) {
+        delete sessions[key];
+      }
+      saveSessionsToDisk();
 
-  } else if (session.type === 'photo_confirm') {
-    const text = ctx.message.text.toLowerCase();
-    if (text === 'oui' || text === 'o') {
-      await confirmPhoto(ctx, session);
-    } else {
-      ctx.reply('❌ Annulé.');
+    } else if (session.type === 'photo_confirm') {
+      const text = ctx.message.text.toLowerCase();
+      if (text === 'oui' || text === 'o') {
+        await confirmPhoto(ctx, session);
+      } else {
+        ctx.reply('❌ Annulé.');
+      }
+      delete sessions[key];
+      saveSessionsToDisk();
     }
+  } catch (err) {
+    console.error('[TEXT] error:', err);
     delete sessions[key];
     saveSessionsToDisk();
+    ctx.reply('❌ Une erreur est survenue lors de l\'enregistrement. Réessaie avec /depense ou /recette.');
   }
 });
 
